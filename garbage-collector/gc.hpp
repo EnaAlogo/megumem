@@ -42,6 +42,60 @@ namespace megu {
 		};
 	*/
 
+	template<typename T>
+	struct GCArrayCtor {
+		constexpr GCArrayCtor(T* data, std::size_t size)
+			:ptr_(data), nel_(size) {}
+
+		constexpr T* operator()(T const& val)const
+			noexcept(std::is_nothrow_copy_assignable_v<T> 
+				&& std::is_nothrow_default_constructible_v<T>) 
+		{
+			for (size_t i = 0; i < nel_; ++i) {
+				new(ptr_ + i) T(val);
+			}
+			return ptr_;
+		}
+
+		constexpr T* operator()(std::initializer_list<T> val)const
+			noexcept(std::is_nothrow_copy_assignable_v<T> 
+				&& std::is_nothrow_default_constructible_v<T>)
+		{
+			size_t lval = val.size();  
+			if constexpr (std::is_trivially_copyable_v<T>) {
+				std::memcpy(ptr_, val.begin(), val.size() * sizeof(T));
+			}
+			else {
+				std::size_t i = 0;
+				for (auto&& v : val) {
+					ptr_[i++] = std::forward<T>(v);
+				}
+			}
+			for (int64_t i = lval; i < nel_; ++i) {
+				new(ptr_ + i) T();
+			}
+			return ptr_;
+		}
+
+		constexpr operator T* ()const
+			noexcept(std::is_nothrow_default_constructible_v<T>
+				|| (std::is_trivially_default_constructible_v<T> && std::is_trivially_destructible_v<T>)) {
+			if constexpr (std::is_trivially_default_constructible_v<T> && std::is_trivially_destructible_v<T>) {
+
+			}
+			else {
+				for (size_t i = 0; i < nel_; ++i) {
+					new(ptr_ + i) T();
+				}
+			}
+			return ptr_;
+		}
+
+	private:
+		T* ptr_;
+		std::size_t nel_;
+	};
+
 	struct GarbageCollector {
 		GarbageCollector(const Word* rsp);
 		~GarbageCollector();
@@ -83,7 +137,7 @@ namespace megu {
 		}
 
 		template<typename T>
-		T* NewArray(std::size_t num, std::size_t alingment = alignof(T)) {
+		GCArrayCtor<T> NewArray(std::size_t num, std::size_t alingment = alignof(T)) {
 			void(*dtor)(void*, std::size_t)noexcept = nullptr;
 			if constexpr (std::is_trivially_destructible_v<T>) {
 				dtor = nullptr;
@@ -93,13 +147,14 @@ namespace megu {
 				dtor = [](void* data, std::size_t nb) noexcept {
 					T* arr = reinterpret_cast<T*>(data);
 					std::size_t const numel = nb / sizeof(T);
-					for (size_t i = 0; i < numel; ++i) {
+					for (int64_t i = numel - 1; i > -1; --i) {
 						arr[i].~T();
 					}
 				};
 			}
 			void* buffer = AllocateObject(sizeof(T) * num, alingment, dtor);
-			return std::launder(reinterpret_cast<T*>(buffer));
+			T* mem = std::launder(reinterpret_cast<T*>(buffer));
+			return GCArrayCtor<T>(mem, num);
 		}
 
 	private: 
